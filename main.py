@@ -46,32 +46,23 @@ def is_cyber_hygiene_question(text):
 
 def is_general_educational_text(text):
     """Check if the text is general educational/informational content that shouldn't be analyzed for spam"""
-    # Keywords that indicate educational/informational content
-    educational_indicators = [
-        'definition', 'definition of', 'what is', 'what are', 'explain', 'describe',
-        'medical', 'health', 'symptoms', 'treatment', 'disease', 'condition',
-        'educational', 'learning', 'study', 'research', 'information about',
-        'အဓိပ္ပာယ်', 'ဆိုလိုရင်း', 'ဘာလဲ', 'ဘာတွေလဲ', 'ရှင်းပြပါ', 'ဖော်ပြပါ',
-        'ဆေးပညာ', 'ကျန်းမာရေး', 'လက္ခဏာ', 'ကုသမှု', 'ရောဂါ', 'အခြေအနေ',
-        'ပညာရေး', 'သင်ယူခြင်း', 'လေ့လာခြင်း', 'သုတေသန', 'အချက်အလက်'
-    ]
-    
-    # Check if text contains educational patterns
+    # Only trigger for clear definition/explanation patterns or medical/health info
     text_lower = text.lower()
-    
-    # Check for definition-like patterns
-    if any(indicator in text_lower for indicator in educational_indicators):
+    # Definition/explanation patterns
+    definition_patterns = [
+        'definition of', 'what is', 'what are', 'explain', 'describe',
+        'အဓိပ္ပာယ်', 'ဆိုလိုရင်း', 'ဘာလဲ', 'ဘာတွေလဲ', 'ရှင်းပြပါ', 'ဖော်ပြပါ',
+    ]
+    if any(pattern in text_lower for pattern in definition_patterns):
         return True
-    
-    # Check for medical/health content
-    medical_keywords = ['hallucination', 'hallucinations', 'medical', 'health', 'doctor', 'treatment', 'symptoms']
+    # Medical/health content
+    medical_keywords = ['hallucination', 'hallucinations', 'medical', 'health', 'doctor', 'treatment', 'symptoms',
+        'ဆေးပညာ', 'ကျန်းမာရေး', 'လက္ခဏာ', 'ကုသမှု', 'ရောဂါ', 'အခြေအနေ']
     if any(keyword in text_lower for keyword in medical_keywords):
         return True
-    
-    # Check if text looks like educational content (contains definitions, explanations)
+    # Obvious English/Burmese definition structure
     if 'is where' in text_lower or 'are where' in text_lower or 'means' in text_lower:
         return True
-    
     return False
 
 @app.post("/analyze")
