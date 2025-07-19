@@ -44,11 +44,51 @@ def is_cyber_hygiene_question(text):
     text_lower = text.lower()
     return any(keyword in text_lower for keyword in cyber_keywords)
 
+def is_general_educational_text(text):
+    """Check if the text is general educational/informational content that shouldn't be analyzed for spam"""
+    # Keywords that indicate educational/informational content
+    educational_indicators = [
+        'definition', 'definition of', 'what is', 'what are', 'explain', 'describe',
+        'medical', 'health', 'symptoms', 'treatment', 'disease', 'condition',
+        'educational', 'learning', 'study', 'research', 'information about',
+        'အဓိပ္ပာယ်', 'ဆိုလိုရင်း', 'ဘာလဲ', 'ဘာတွေလဲ', 'ရှင်းပြပါ', 'ဖော်ပြပါ',
+        'ဆေးပညာ', 'ကျန်းမာရေး', 'လက္ခဏာ', 'ကုသမှု', 'ရောဂါ', 'အခြေအနေ',
+        'ပညာရေး', 'သင်ယူခြင်း', 'လေ့လာခြင်း', 'သုတေသန', 'အချက်အလက်'
+    ]
+    
+    # Check if text contains educational patterns
+    text_lower = text.lower()
+    
+    # Check for definition-like patterns
+    if any(indicator in text_lower for indicator in educational_indicators):
+        return True
+    
+    # Check for medical/health content
+    medical_keywords = ['hallucination', 'hallucinations', 'medical', 'health', 'doctor', 'treatment', 'symptoms']
+    if any(keyword in text_lower for keyword in medical_keywords):
+        return True
+    
+    # Check if text looks like educational content (contains definitions, explanations)
+    if 'is where' in text_lower or 'are where' in text_lower or 'means' in text_lower:
+        return True
+    
+    return False
+
 @app.post("/analyze")
 async def analyze(req: AnalyzeRequest):
     text = req.text.strip()
     if not text:
         return {"error": "စာသားမရှိပါ"}
+    
+    # Check if this is general educational text
+    if is_general_educational_text(text):
+        return {
+            "result": """ဤစာသားသည် ပညာရေးဆိုင်ရာ သို့မဟုတ် အချက်အလက်ပေးသော စာသားဖြစ်ပါသည်။
+
+ကျွန်ုပ်တို့၏ Spam Detector သည် မက်ဆေ့ချ်များ၊ အီးမေးလ်များ သို့မဟုတ် ဆက်သွယ်ရေးစာသားများကို စစ်ဆေးရန် ဒီဇိုင်းပြုလုပ်ထားပါသည်။
+
+ပညာရေးဆိုင်ရာ သို့မဟုတ် အချက်အလက်ပေးသော စာသားများအတွက် သင့်အား ပိုမိုကောင်းမွန်သော အကူအညီပေးနိုင်ရန် ကျွန်ုပ်တို့၏ ဆိုက်ဘာလုံခြုံရေး ချက်တ်ဘော့ကို အသုံးပြုပါ။"""
+        }
     
     # Check if this is a cyber hygiene question
     if is_cyber_hygiene_question(text):
