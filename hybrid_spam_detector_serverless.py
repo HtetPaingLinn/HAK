@@ -194,19 +194,19 @@ class ServerlessHybridSpamDetector:
         try:
             if not self.gemini_model:
                 return "unknown", 0.0, "Gemini API not available"
-            
+
             prompt = f"""
             Analyze this Burmese text for spam detection. Respond in JSON format only:
-            
+
             {{
                 "category": "legitimate|spam|scam|phishing",
                 "confidence": 0.0-1.0,
                 "reasoning": "brief explanation"
             }}
-            
+
             Text: "{text}"
             """
-            
+
             response = self.gemini_model.generate_content(
                 prompt,
                 generation_config=genai.types.GenerationConfig(
@@ -214,7 +214,7 @@ class ServerlessHybridSpamDetector:
                     max_output_tokens=200
                 )
             )
-            
+
             # Parse JSON response
             try:
                 response_text = response.text.strip()
@@ -224,81 +224,76 @@ class ServerlessHybridSpamDetector:
                     json_text = response_text[json_start:json_end]
                 else:
                     json_text = response_text
-                
+
                 result = json.loads(json_text)
                 category = result.get('category', 'unknown')
                 confidence = float(result.get('confidence', 0.0))
                 reasoning = result.get('reasoning', '')
-                
+
                 return category, confidence, reasoning
-                
+
             except (json.JSONDecodeError, ValueError):
                 # Fallback parsing
                 response_lower = response.text.lower()
+                if 'phishing' in response_lower:
+                    return 'phishing', 0.7, response.text[:120]
+                if 'scam' in response_lower:
+                    return 'scam', 0.7, response.text[:120]
                 if 'spam' in response_lower:
-                    return 'spam', 0.7, response.text[:100]
-                elif 'scam' in response_lower:
-                    return 'scam', 0.7, response.text[:100]
-                elif 'phishing' in response_lower:
-                    return 'phishing', 0.7, response.text[:100]
-                else:
-                    return 'legitimate', 0.6, response.text[:100]
-            
+                    return 'spam', 0.7, response.text[:120]
+                return 'legitimate', 0.6, response.text[:120]
+
         except Exception as e:
             logger.error(f"❌ Gemini prediction failed: {str(e)}")
-            return "unknown", 0.0, f"Error: {str(e)}"
+            err_text = str(e)
+            # Detect rate limit errors explicitly and surface a clear reason
+            if 'RATE_LIMIT' in err_text or '429' in err_text or 'quota' in err_text.lower():
+                return "rate_limited", 0.0, f"RATE_LIMIT_EXCEEDED: {err_text}"
+            return "unknown", 0.0, f"Error: {err_text}"
     
     def predict_hybrid(self, text: str) -> Dict:
-        """
-        Serverless-optimized hybrid prediction
-        """
-        # Get local prediction (cached)
-        local_category, local_confidence = self._predict_local_cached(text)
+        """Hybrid prediction using both local model and Gemini API"""
+        local_category, local_confidence = self._predict_local(text)
+        gemini_category, gemini_confidence, gemini_reasoning = self._predict_gemini(text)
 
-        # If Gemini is disabled or unavailable, use local-only prediction
-        if not self.use_gemini or not self.gemini_model:
-            risk_level = self._assess_risk(local_category, local_confidence)
+        if gemini_category == "rate_limited":
+            logger.warning("⚠️ Gemini API rate limit exceeded. Using local model only.")
             return {
                 "final_prediction": {
                     "category": local_category,
                     "confidence": round(local_confidence, 3),
-                    "risk_level": risk_level,
-                    "agreement": "n/a"
+                    "risk_level": self._assess_risk(local_category, local_confidence),
+                    "agreement": "local_only"
                 },
                 "local_model": {
                     "category": local_category,
                     "confidence": round(local_confidence, 3)
                 },
                 "gemini_api": {
-                    "category": "unknown",
-                    "confidence": 0.0,
-                    "reasoning": "Gemini disabled"
+                    "category": gemini_category,
+                    "confidence": round(gemini_confidence, 3),
+                    "reasoning": gemini_reasoning
                 },
                 "input_text": text,
-                "model_version": "local_only_v1.1"
+                "model_version": "hybrid_serverless_v1.1"
             }
 
-        # Otherwise, combine with Gemini
-        gemini_category, gemini_confidence, gemini_reasoning = self._predict_gemini(text)
-        local_weight = 0.6
-        gemini_weight = 0.4
-
-        if local_category == gemini_category:
-            final_category = local_category
-            final_confidence = (local_confidence * local_weight + gemini_confidence * gemini_weight)
-            agreement = "high"
-        else:
-            if local_confidence > gemini_confidence:
-                final_category = local_category
-                final_confidence = local_confidence * 0.8
-            else:
-                final_category = gemini_category
-                final_confidence = gemini_confidence * 0.8
+        # Calculate agreement between models
+        agreement = "high"
+        if local_category != gemini_category:
             agreement = "low"
-        
+
+        # Combine predictions
+        if local_confidence > gemini_confidence:
+            final_category = local_category
+            final_confidence = local_confidence * 0.8
+        else:
+            final_category = gemini_category
+            final_confidence = gemini_confidence * 0.8
+
         # Risk assessment
         risk_level = self._assess_risk(final_category, final_confidence)
-        
+
         return {
             "final_prediction": {
                 "category": final_category,
