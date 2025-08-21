@@ -100,11 +100,11 @@ async def add_training_data(req: TrainingRequest):
 @app.get("/stats")
 async def get_model_stats():
     """Get model statistics"""
-    if not detector:
+    det = get_detector_instance()
+    if not det:
         raise HTTPException(status_code=500, detail="Detector မရရှိနိုင်ပါ")
-    
     try:
-        stats = detector.get_model_stats()
+        stats = det.get_model_stats()
         return stats
     except Exception as e:
         logger.error(f"Stats retrieval failed: {str(e)}")
