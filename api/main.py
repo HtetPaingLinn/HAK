@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
-from hybrid_spam_detector_serverless import get_detector
+from detector_light import get_detector
 import logging
 from typing import Optional
 
