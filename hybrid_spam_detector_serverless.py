@@ -15,7 +15,6 @@ from typing import Dict, Tuple, List
 import json
 import io
 from functools import lru_cache
-from pathlib import Path
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -43,8 +42,6 @@ class ServerlessHybridSpamDetector:
         self.vectorizer = None
         self.local_model = None
         self.gemini_model = None
-        # Control whether to use Gemini via env flag (default: False)
-        self.use_gemini = os.getenv("USE_GEMINI", "false").lower() == "true"
         self.label_mapping = {
             'legitimate': 0,
             'spam': 1, 
@@ -61,10 +58,6 @@ class ServerlessHybridSpamDetector:
     
     def _setup_gemini(self):
         """Setup Gemini API with error handling"""
-        # Only initialize Gemini if explicitly enabled
-        if not self.use_gemini:
-            logger.info("ℹ️ USE_GEMINI is disabled. Running local-only model.")
-            return
         try:
             api_key = os.getenv("GEMINI_API_KEY")
             if api_key:
@@ -107,18 +100,11 @@ class ServerlessHybridSpamDetector:
         return text.lower()
     
     def _initialize_local_model(self):
-        """Initialize local model from CSV dataset (falls back to embedded sample)"""
+        """Initialize local model with embedded dataset"""
         try:
-            # Try to load dataset from file first
-            dataset_path = Path(__file__).parent / "burmese_spam_dataset.csv"
-            if dataset_path.exists():
-                df = pd.read_csv(dataset_path)
-                logger.info(f"✅ Loaded dataset from {dataset_path} with {len(df)} rows")
-            else:
-                # Fallback to embedded minimal dataset
-                csv_data = io.StringIO(self._get_default_dataset())
-                df = pd.read_csv(csv_data)
-                logger.warning("⚠️ Dataset file not found. Using embedded sample dataset.")
+            # Load dataset from string
+            csv_data = io.StringIO(self._get_default_dataset())
+            df = pd.read_csv(csv_data)
             
             # Preprocess texts
             df['processed_text'] = df['text'].apply(self._preprocess_text)
@@ -135,7 +121,7 @@ class ServerlessHybridSpamDetector:
             
             # Create TF-IDF vectorizer
             self.vectorizer = TfidfVectorizer(
-                max_features=3000,  # allow richer features with larger dataset
+                max_features=500,  # Reduced for serverless
                 ngram_range=(1, 2),
                 min_df=1,
                 max_df=0.95
@@ -194,19 +180,19 @@ class ServerlessHybridSpamDetector:
         try:
             if not self.gemini_model:
                 return "unknown", 0.0, "Gemini API not available"
-
+            
             prompt = f"""
             Analyze this Burmese text for spam detection. Respond in JSON format only:
-
+            
             {{
                 "category": "legitimate|spam|scam|phishing",
                 "confidence": 0.0-1.0,
                 "reasoning": "brief explanation"
             }}
-
+            
             Text: "{text}"
             """
-
+            
             response = self.gemini_model.generate_content(
                 prompt,
                 generation_config=genai.types.GenerationConfig(
@@ -214,7 +200,7 @@ class ServerlessHybridSpamDetector:
                     max_output_tokens=200
                 )
             )
-
+            
             # Parse JSON response
             try:
                 response_text = response.text.strip()
@@ -224,76 +210,60 @@ class ServerlessHybridSpamDetector:
                     json_text = response_text[json_start:json_end]
                 else:
                     json_text = response_text
-
+                
                 result = json.loads(json_text)
                 category = result.get('category', 'unknown')
                 confidence = float(result.get('confidence', 0.0))
                 reasoning = result.get('reasoning', '')
-
+                
                 return category, confidence, reasoning
-
+                
             except (json.JSONDecodeError, ValueError):
                 # Fallback parsing
                 response_lower = response.text.lower()
-                if 'phishing' in response_lower:
-                    return 'phishing', 0.7, response.text[:120]
-                if 'scam' in response_lower:
-                    return 'scam', 0.7, response.text[:120]
                 if 'spam' in response_lower:
-                    return 'spam', 0.7, response.text[:120]
-                return 'legitimate', 0.6, response.text[:120]
-
+                    return 'spam', 0.7, response.text[:100]
+                elif 'scam' in response_lower:
+                    return 'scam', 0.7, response.text[:100]
+                elif 'phishing' in response_lower:
+                    return 'phishing', 0.7, response.text[:100]
+                else:
+                    return 'legitimate', 0.6, response.text[:100]
+            
         except Exception as e:
             logger.error(f"❌ Gemini prediction failed: {str(e)}")
-            err_text = str(e)
-            # Detect rate limit errors explicitly and surface a clear reason
-            if 'RATE_LIMIT' in err_text or '429' in err_text or 'quota' in err_text.lower():
-                return "rate_limited", 0.0, f"RATE_LIMIT_EXCEEDED: {err_text}"
-            return "unknown", 0.0, f"Error: {err_text}"
+            return "unknown", 0.0, f"Error: {str(e)}"
     
     def predict_hybrid(self, text: str) -> Dict:
-        """Hybrid prediction using both local model and Gemini API"""
-        local_category, local_confidence = self._predict_local(text)
+        """
+        Serverless-optimized hybrid prediction
+        """
+        # Get local prediction (cached)
+        local_category, local_confidence = self._predict_local_cached(text)
+        
+        # Get Gemini prediction
         gemini_category, gemini_confidence, gemini_reasoning = self._predict_gemini(text)
-
-        if gemini_category == "rate_limited":
-            logger.warning("⚠️ Gemini API rate limit exceeded. Using local model only.")
-            return {
-                "final_prediction": {
-                    "category": local_category,
-                    "confidence": round(local_confidence, 3),
-                    "risk_level": self._assess_risk(local_category, local_confidence),
-                    "agreement": "local_only"
-                },
-                "local_model": {
-                    "category": local_category,
-                    "confidence": round(local_confidence, 3)
-                },
-                "gemini_api": {
-                    "category": gemini_category,
-                    "confidence": round(gemini_confidence, 3),
-                    "reasoning": gemini_reasoning
-                },
-                "input_text": text,
-                "model_version": "hybrid_serverless_v1.1"
-            }
-
-        # Calculate agreement between models
-        agreement = "high"
-        if local_category != gemini_category:
-            agreement = "low"
-
+        
         # Combine predictions
-        if local_confidence > gemini_confidence:
+        local_weight = 0.6
+        gemini_weight = 0.4
+        
+        if local_category == gemini_category:
             final_category = local_category
-            final_confidence = local_confidence * 0.8
+            final_confidence = (local_confidence * local_weight + gemini_confidence * gemini_weight)
+            agreement = "high"
         else:
-            final_category = gemini_category
-            final_confidence = gemini_confidence * 0.8
-
+            if local_confidence > gemini_confidence:
+                final_category = local_category
+                final_confidence = local_confidence * 0.8
+            else:
+                final_category = gemini_category
+                final_confidence = gemini_confidence * 0.8
+            agreement = "low"
+        
         # Risk assessment
         risk_level = self._assess_risk(final_category, final_confidence)
-
+        
         return {
             "final_prediction": {
                 "category": final_category,
@@ -311,7 +281,7 @@ class ServerlessHybridSpamDetector:
                 "reasoning": gemini_reasoning
             },
             "input_text": text,
-            "model_version": "hybrid_serverless_v1.1"
+            "model_version": "hybrid_serverless_v1.0"
         }
     
     def _assess_risk(self, category: str, confidence: float) -> str:
