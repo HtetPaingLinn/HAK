@@ -38,7 +38,25 @@ class LightweightHybridDetector:
             api_key = os.getenv("GEMINI_API_KEY")
             if api_key:
                 genai.configure(api_key=api_key)
-                self.gemini_model = genai.GenerativeModel("models/gemini-2.0-flash")
+                # Prefer a commonly available, lower-cost model; fallback gracefully
+                preferred_models = [
+                    "gemini-1.5-flash",
+                    "models/gemini-1.5-flash",
+                    "gemini-pro"
+                ]
+                last_err = None
+                for m in preferred_models:
+                    try:
+                        self.gemini_model = genai.GenerativeModel(m)
+                        logger.info(f"✅ Gemini API initialized with model: {m}")
+                        last_err = None
+                        break
+                    except Exception as me:
+                        last_err = me
+                        continue
+                if last_err is not None and self.gemini_model is None:
+                    logger.warning(f"⚠️ Could not initialize preferred Gemini models: {last_err}")
+                    self.gemini_model = None
                 logger.info("✅ Gemini API initialized")
             else:
                 logger.warning("⚠️ GEMINI_API_KEY not found")

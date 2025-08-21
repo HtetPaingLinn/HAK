@@ -113,11 +113,21 @@ async def get_model_stats():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    det = get_detector_instance()
+    local_available = False
+    gemini_available = False
+    if det is not None:
+        try:
+            local_available = bool(getattr(det, "local_model", False))
+            gemini_available = getattr(det, "gemini_model", None) is not None
+        except Exception:
+            local_available = False
+            gemini_available = False
     return {
         "status": "healthy",
-        "detector_available": get_detector_instance() is not None,
-        "local_model_available": get_detector_instance().local_model is not None if get_detector_instance() else False,
-        "gemini_api_available": get_detector_instance().gemini_model is not None if get_detector_instance() else False,
+        "detector_available": det is not None,
+        "local_model_available": local_available,
+        "gemini_api_available": gemini_available,
         "message": "Serverless Hybrid Burmese Spam Detector API is running"
     }
 
