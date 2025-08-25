@@ -70,21 +70,32 @@ async def analyze(req: AnalyzeRequest):
             return result
         else:
             # Use only Gemini API (legacy mode)
-            gemini_category, gemini_confidence, gemini_reasoning, gemini_detailed = detector._predict_gemini(text)
-            # Derive spam probability from Gemini decision
-            spam_like = {"Spam", "Scam", "Phishing"}
-            spam_probability = float(gemini_confidence if gemini_category in spam_like else (1.0 - gemini_confidence))
-            binary_label = "spam" if spam_probability >= 0.5 else "general"
-            return {
-                "mode": "gemini_only",
-                "category": gemini_category,
-                "confidence": gemini_confidence,
-                "reasoning": gemini_reasoning,
-                "detailed": gemini_detailed,
-                "binary_label": binary_label,
-                "spam_probability": spam_probability,
-                "spam_probability_pct": round(spam_probability * 100, 2)
-            }
+            try:
+                detailed = detector.predict_gemini_detailed(text)
+                primary = detailed.get("primary_label") or detailed.get("category")
+                conf = float(detailed.get("confidence", detailed.get("spam_probability", 0.75)))
+                spam_prob = float(detailed.get("spam_probability", conf if primary in {"Spam","Scam","Phishing"} else 1.0-conf))
+                return {
+                    "mode": "gemini_only",
+                    "final_prediction": {
+                        "label": primary,
+                        "confidence": conf,
+                        "source": "gemini_only"
+                    },
+                    "binary_label": detailed.get("binary_label"),
+                    "spam_probability": spam_prob,
+                    "spam_probability_pct": round(spam_prob * 100, 2),
+                    "gemini_api": detailed
+                }
+            except Exception:
+                # Fallback to simple legacy output
+                gemini_category, gemini_confidence, gemini_reasoning = detector._predict_gemini(text)
+                return {
+                    "category": gemini_category,
+                    "confidence": gemini_confidence,
+                    "reasoning": gemini_reasoning,
+                    "mode": "gemini_only"
+                }
             
     except Exception as e:
         logger.error(f"Analysis failed: {str(e)}")
