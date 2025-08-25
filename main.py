@@ -70,32 +70,22 @@ async def analyze(req: AnalyzeRequest):
             return result
         else:
             # Use only Gemini API (legacy mode)
-            try:
-                detailed = detector.predict_gemini_detailed(text)
-                primary = detailed.get("primary_label") or detailed.get("category")
-                conf = float(detailed.get("confidence", detailed.get("spam_probability", 0.75)))
-                spam_prob = float(detailed.get("spam_probability", conf if primary in {"Spam","Scam","Phishing"} else 1.0-conf))
-                return {
-                    "mode": "gemini_only",
-                    "final_prediction": {
-                        "label": primary,
-                        "confidence": conf,
-                        "source": "gemini_only"
-                    },
-                    "binary_label": detailed.get("binary_label"),
-                    "spam_probability": spam_prob,
-                    "spam_probability_pct": round(spam_prob * 100, 2),
-                    "gemini_api": detailed
-                }
-            except Exception:
-                # Fallback to simple legacy output
-                gemini_category, gemini_confidence, gemini_reasoning = detector._predict_gemini(text)
-                return {
-                    "category": gemini_category,
-                    "confidence": gemini_confidence,
-                    "reasoning": gemini_reasoning,
-                    "mode": "gemini_only"
-                }
+            gemini_category, gemini_confidence, gemini_reasoning = detector._predict_gemini(text)
+            # Compute spam probability and binary label similar to hybrid
+            spam_like = {"Spam", "Scam", "Phishing", "Malware", "Impersonation"}
+            spam_probability = float(gemini_confidence if gemini_category in spam_like else (1.0 - gemini_confidence))
+            binary_label = "spam" if spam_probability >= 0.5 else "general"
+
+            return {
+                "mode": "gemini_only",
+                "category": gemini_category,
+                "confidence": gemini_confidence,
+                "reasoning": gemini_reasoning,
+                "structured": getattr(detector, "_last_gemini_context", None),
+                "binary_label": binary_label,
+                "spam_probability": spam_probability,
+                "spam_probability_pct": round(spam_probability * 100, 2)
+            }
             
     except Exception as e:
         logger.error(f"Analysis failed: {str(e)}")

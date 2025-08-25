@@ -23,6 +23,8 @@ class ServerlessHybridDetector:
         self.local_model = None  # Not available in serverless
         self.gemini_model = None
         self.kb: Dict[str, Any] = {}
+        # Holds last structured Gemini JSON (if available)
+        self._last_gemini_context: Optional[Dict[str, Any]] = None
 
         # Load KB JSON (rule-based indicators)
         try:
@@ -64,17 +66,9 @@ class ServerlessHybridDetector:
         gem_category: Optional[str] = None
         gem_conf: Optional[float] = None
         gem_reason: Optional[str] = None
-        gem_detailed: Optional[Dict[str, Any]] = None
         if self.gemini_model is not None:
             try:
-                # Prefer detailed prediction (JSON). Fallback to simple.
-                try:
-                    gem_detailed = self.predict_gemini_detailed(text)
-                    gem_category = gem_detailed.get("primary_label") or gem_detailed.get("category")
-                    gem_conf = float(gem_detailed.get("confidence", gem_detailed.get("spam_probability", 0.75)))
-                    gem_reason = gem_detailed.get("rationale") or gem_detailed.get("reasoning")
-                except Exception:
-                    gem_category, gem_conf, gem_reason = self._predict_gemini(text)
+                gem_category, gem_conf, gem_reason = self._predict_gemini(text)
             except Exception as e:
                 logger.error(f"Gemini error in hybrid path: {e}")
 
@@ -121,6 +115,9 @@ class ServerlessHybridDetector:
             details["reasoning"] = gem_reason
         if agreement is not None:
             details["agreement"] = agreement
+        # Attach structured Gemini context if available
+        if getattr(self, "_last_gemini_context", None):
+            details["gemini_structured"] = self._last_gemini_context
 
         return {
             "final_prediction": {
@@ -138,21 +135,7 @@ class ServerlessHybridDetector:
                     "category": gem_category,
                     "confidence": gem_conf,
                     "reasoning": gem_reason,
-                    **({} if gem_detailed is None else {
-                        "primary_label": gem_detailed.get("primary_label"),
-                        "labels": gem_detailed.get("labels"),
-                        "spam_probability": gem_detailed.get("spam_probability"),
-                        "binary_label": gem_detailed.get("binary_label"),
-                        "rationale": gem_detailed.get("rationale"),
-                        "risk_factors": gem_detailed.get("risk_factors"),
-                        "suggested_actions": gem_detailed.get("suggested_actions"),
-                        "evidence_phrases": gem_detailed.get("evidence_phrases"),
-                        "urls": gem_detailed.get("urls"),
-                        "has_links": gem_detailed.get("has_links"),
-                        "contains_personal_info": gem_detailed.get("contains_personal_info"),
-                        "language": gem_detailed.get("language"),
-                        "severity": gem_detailed.get("severity"),
-                    })
+                    "structured": getattr(self, "_last_gemini_context", None),
                 }
                 if gem_category is not None else None
             ),
@@ -162,15 +145,38 @@ class ServerlessHybridDetector:
     def _predict_gemini(self, text: str) -> Tuple[str, float, str]:
         if not self.gemini_model:
             raise RuntimeError("Gemini model is not available. Ensure GEMINI_API_KEY is set.")
-
+        # Ask for structured Burmese JSON with richer taxonomy
         prompt = f"""
-        မြန်မာစာပိုဒ်ကို စစ်ဆေးပါ။ အောက်ပါအမျိုးအစားများထဲမှ တစ်ခုအဖြစ် ခွဲခြားပါ:
-        - ယုံကြည်စိတ်ချရ (Legit)
-        - စပမ် (Spam)
-        - လှည်ဖြားမှု (Scam)
-        - ဖစ်ရှင်း (Phishing)
+        အောက်ပါ မြန်မာစာသားကို လုံခြုံရေး ရှုထောင့်မှ ခွဲခြားပါ။ မြန်မာဘာသာဖြင့် JSON အဖြစ်သာ ထုတ်ပေးပါ။
 
-        အမျိုးအစားနှင့် အကြောင်းပြချက်ကို မြန်မာဘာသာဖြင့် ပေးပါ။
+        အဓိကအမျိုးအစားများ (primary_category):
+        - Legit (ယုံကြည်စိတ်ချရ)
+        - Spam (စပမ်)
+        - Scam (လှည်ဖြားမှု)
+        - Phishing (ဖစ်ရှင်း)
+        - Malware (မေါ်လဝဲ)
+        - Impersonation (မည်သူ့အဖြစ် ဖျက်ဆီးယှက်ယှဲ)
+        - Misinformation (မှားယွင်းသတင်း)
+        - Harassment (အနှောင့်အယှက်/သာမန်မဟုတ်သောဖော်ပြချက်)
+
+        Subcategory ဥပမာများ (optional):
+        - Scam: investment, lottery, job, romance, tech_support, delivery, loan
+        - Phishing: credential, otp, payment, account_verification, bank, wallet
+        - Spam: marketing, bulk, referral, affiliate
+        - Malware: apk, link, attachment, drive_by
+        - Impersonation: official, bank, company, celebrity, friend_family
+
+        JSON Schema:
+        {
+          "primary_category": "Legit|Spam|Scam|Phishing|Malware|Impersonation|Misinformation|Harassment",
+          "subcategory": "string",
+          "confidence": 0.0-1.0,
+          "risk_level": "Low|Medium|High|Critical",
+          "reasons_mm": ["မြန်မာဘာသာဖြင့် အကြောင်းပြချက်များ"],
+          "red_flags_mm": ["သံသယဖြစ်စရာအချက်များ"],
+          "suggested_actions_mm": ["လုံခြုံရေးအတွက် လုပ်ဆောင်ရန်"],
+          "short_explanation_mm": "အကျဉ်းချုံးရှင်းလင်းချက်"
+        }
 
         စာသား:
         '''{text}'''
@@ -181,90 +187,62 @@ class ServerlessHybridDetector:
         except Exception as e:
             logger.error(f"Gemini prediction failed: {e}")
             raise
-
-        # Very simple heuristic extraction from model output
-        lower = raw.lower()
-        if "phishing" in lower or "ဖစ်ရှင်း" in lower:
-            category = "Phishing"
-        elif "scam" in lower or "လှည်ဖြား" in lower:
-            category = "Scam"
-        elif "spam" in lower or "စပမ်" in lower:
-            category = "Spam"
-        else:
-            category = "Legit"
-
-        # We don't have a numeric score; assign a heuristic confidence
-        if category == "Legit":
-            confidence = 0.7
-        else:
-            confidence = 0.75
-
-        return category, confidence, raw
-
-    def predict_gemini_detailed(self, text: str) -> Dict[str, Any]:
-        """Ask Gemini to return a structured JSON with rich context and multi-label confidences."""
-        if not self.gemini_model:
-            raise RuntimeError("Gemini model is not available. Ensure GEMINI_API_KEY is set.")
-
-        schema_hint = (
-            "Return ONLY JSON with keys: primary_label (one of: Legit, Spam, Scam, Phishing, "
-            "Promotion, Malware, Adult, Impersonation, Investment, Lottery, TechSupport, Loan, Crypto), "
-            "labels (object of label->confidence 0..1), spam_probability (0..1), binary_label ('general'|'spam'), "
-            "rationale (string), risk_factors (array of strings), suggested_actions (array of strings), "
-            "evidence_phrases (array of strings), urls (array of strings), has_links (bool), "
-            "contains_personal_info (bool), language (string), severity (1..5)."
-        )
-
-        prompt = f"""
-        မြန်မာစာပိုဒ်ကို စစ်ဆေးပြီး အောက်ပါ format နည်းလမ်းအတိုင်း JSON တစ်ခုတည်းသာ ထုတ်ပေးပါ။
-        {schema_hint}
-
-        စာသား:
-        '''{text}'''
-        """
+        # Try to parse structured JSON from model output
+        self._last_gemini_context = None
+        parsed_category: Optional[str] = None
+        parsed_conf: Optional[float] = None
+        # Extract JSON if wrapped in code fences
+        candidate = raw
+        if "```" in raw:
+            try:
+                candidate = raw.split("```", 2)[1]
+                # Remove language tag if present
+                candidate = candidate.split("\n", 1)[1] if candidate.startswith("json") else candidate
+            except Exception:
+                candidate = raw
         try:
-            response = self.gemini_model.generate_content(prompt)
-            raw = (response.text or "").strip()
-        except Exception as e:
-            logger.error(f"Gemini detailed prediction failed: {e}")
-            raise
-
-        # Try parse JSON strictly
-        parsed: Dict[str, Any]
-        try:
-            # Extract JSON block if model added extra text
-            start = raw.find('{')
-            end = raw.rfind('}')
-            json_str = raw[start:end+1] if start != -1 and end != -1 else raw
-            parsed = json.loads(json_str)
+            obj = json.loads(candidate)
+            if isinstance(obj, dict):
+                self._last_gemini_context = obj
+                pc = str(obj.get("primary_category") or "").strip()
+                # Normalize category capitalization
+                mapping = {
+                    "legit": "Legit",
+                    "spam": "Spam",
+                    "scam": "Scam",
+                    "phishing": "Phishing",
+                    "malware": "Malware",
+                    "impersonation": "Impersonation",
+                    "misinformation": "Misinformation",
+                    "harassment": "Harassment",
+                }
+                parsed_category = mapping.get(pc.lower(), "Legit") if pc else None
+                conf = obj.get("confidence")
+                if isinstance(conf, (int, float)):
+                    parsed_conf = max(0.0, min(1.0, float(conf)))
         except Exception:
-            # Fallback: derive from simple classifier
-            cat, conf, reason = self._predict_gemini(text)
-            parsed = {
-                "primary_label": cat,
-                "labels": {cat: conf},
-                "spam_probability": conf if cat in {"Spam", "Scam", "Phishing"} else 1.0 - conf,
-                "binary_label": "spam" if cat in {"Spam", "Scam", "Phishing"} else "general",
-                "rationale": reason,
-                "risk_factors": [],
-                "suggested_actions": [],
-                "evidence_phrases": [],
-                "urls": [],
-                "has_links": False,
-                "contains_personal_info": False,
-                "language": "my",
-                "severity": 3,
-            }
+            # Fallback to heuristic if JSON parsing fails
+            parsed_category = None
+            parsed_conf = None
 
-        # Normalize some fields and compute a single confidence representative
-        primary = parsed.get("primary_label")
-        labels = parsed.get("labels") or {}
-        if primary and primary in labels:
-            parsed["confidence"] = float(labels.get(primary, 0.75))
-        else:
-            parsed["confidence"] = float(parsed.get("spam_probability", 0.75))
+        if parsed_category is None or parsed_conf is None:
+            # Heuristic extraction
+            lower = raw.lower()
+            if "phishing" in lower or "ဖစ်ရှင်း" in lower:
+                parsed_category = "Phishing"
+            elif "scam" in lower or "လှည်ဖြား" in lower:
+                parsed_category = "Scam"
+            elif "malware" in lower or "မေါ်လဝဲ" in lower:
+                parsed_category = "Malware"
+            elif "impersonation" in lower or "အဖြစ်" in lower:
+                parsed_category = "Impersonation"
+            elif "spam" in lower or "စပမ်" in lower:
+                parsed_category = "Spam"
+            else:
+                parsed_category = "Legit"
+            parsed_conf = 0.75 if parsed_category != "Legit" else 0.7
 
-        return parsed
+        return parsed_category, float(parsed_conf), raw
 
     # -------------------- Rule-based (KB) prediction --------------------
     def _predict_rules(self, text: str) -> Dict[str, Any]:
