@@ -2,20 +2,26 @@
   "categories": {
     "Phishing": {
       "keywords": [
-        "လင့်ခ်ကို နှိပ်", "link ကိုနှိပ်", "password ထည့်", "လျှို့ဝှက်နံပါတ်", "OTP ပေး", "အကောင့်ပြန်ယူ",
-        "verify your account", "အကောင့် အရေးပေါ်", "စစ်ဆေးရန် ဒီမှာ"
+        "လင့်ခ်ကို နှိပ်", "link ကိုနှိပ်", "password ထည့်", "လျှို့ဝှက်နံပါတ်", "OTP ပေး", "OTP ပေးပါ",
+        "အကောင့်ပြန်ယူ", "account verify", "verify your account", "အကောင့် အရေးပေါ်", "security alert",
+        "စစ်ဆေးရန် ဒီမှာ", "account locked", "update your information"
       ],
       "weight": 0.85
     },
     "Scam": {
       "keywords": [
-        "$", "ရွှေ့ပြောင်းငွေ", "လက်ဆောင်", "အခမဲ့ ရ", "စာရင်းပေး", "bank", "account", "လျှောက်ထားပြီး", "အမြတ် နှုန်း", "investment", "limited slots"
+        "$", "ရွှေ့ပြောင်းငွေ", "လက်ဆောင်", "အခမဲ့ ရ", "စာရင်းပေး", "bank", "account", "လျှောက်ထားပြီး",
+        "အမြတ် နှုန်း", "investment", "limited slots", "lucky draw", "ကံထူးရှင်", "ဆုတောင်းယူ",
+        "win prize", "သင် ကံထူး", "ပရိုမိုးရှင်း ဆု", "transfer fee", "processing fee", "advance fee",
+        "Viber ဆက်သွယ်", "Viber ကို ဆက်သွယ်", "09", "ဖုန်းနံပါတ် ထည့်", "ငွေ ပေးသွင်း", "prepayment",
+        "verify via Viber"
       ],
       "weight": 0.8
     },
     "Spam": {
       "keywords": [
-        "အမြန် ရ", "အစီအစဉ် မရှိ", "ပို့ဆောင်ပေး", "promotion", "discount", "click here", "အခမဲ့", "win prize"
+        "အမြန် ရ", "အစီအစဉ် မရှိ", "ပို့ဆောင်ပေး", "promotion", "discount", "click here", "အခမဲ့",
+        "win prize", "buy now", "limited time", "free offer", "သီးသန့် လျှော့စျေး"
       ],
       "weight": 0.7
     },
@@ -31,10 +37,13 @@
   ],
   "strong_phrases": {
     "Scam": [
-      "$100 ကို $1000", "သင် $500,000 လက်ဆောင်", "အမြတ် အာမခံ", "မြန်မြန် ဆောင်ရွက်"
+      "$100 ကို $1000", "သင် $500,000 လက်ဆောင်", "အမြတ် အာမခံ", "မြန်မြန် ဆောင်ရွက်",
+      "ကံထူးရှင် ဖြစ်ပါသည်", "Lucky Draw", "ဆုတောင်းယူရန် Viber", "ဆုတောင်းယူရန် ဆက်သွယ်",
+      "processing fee အရင်ပေး", "ငွေကြိုပေး", "advance fee required"
     ],
     "Phishing": [
-      "OTP ပေးပါ", "password ထည့်ပါ", "account verify", "security alert"
+      "OTP ပေးပါ", "password ထည့်ပါ", "account verify", "security alert",
+      "အကောင့် ပိတ်မည်", "verify now", "confirm your identity"
     ]
   }
 }

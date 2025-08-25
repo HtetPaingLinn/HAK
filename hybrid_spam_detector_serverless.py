@@ -64,9 +64,22 @@ class ServerlessHybridDetector:
         gem_category: Optional[str] = None
         gem_conf: Optional[float] = None
         gem_reason: Optional[str] = None
+        gem_confidences: Optional[Dict[str, float]] = None
+        gem_subcategory: Optional[str] = None
+        gem_top: Optional[List[Dict[str, Any]]]= None
         if self.gemini_model is not None:
             try:
-                gem_category, gem_conf, gem_reason = self._predict_gemini(text)
+                gem_out = self._predict_gemini(text)
+                # Backward-compat: support old tuple or new dict
+                if isinstance(gem_out, tuple):
+                    gem_category, gem_conf, gem_reason = gem_out
+                elif isinstance(gem_out, dict):
+                    gem_category = gem_out.get("primary_category") or gem_out.get("category")
+                    gem_conf = float(gem_out.get("primary_confidence", 0.75))
+                    gem_reason = gem_out.get("reasoning")
+                    gem_confidences = gem_out.get("confidences")
+                    gem_subcategory = gem_out.get("subcategory")
+                    gem_top = gem_out.get("top_categories")
             except Exception as e:
                 logger.error(f"Gemini error in hybrid path: {e}")
 
@@ -96,9 +109,20 @@ class ServerlessHybridDetector:
         kb_scores = rule_out.get("scores") or {"Spam": 0.0, "Scam": 0.0, "Phishing": 0.0, "Legit": 0.0}
         spam_prob_kb = float(max(kb_scores.get("Spam", 0.0), kb_scores.get("Scam", 0.0), kb_scores.get("Phishing", 0.0)))
         # From Gemini category/confidence if available
-        if gem_category is not None and gem_conf is not None:
+        if gem_confidences:
+            spam_prob_gem = float(max(
+                gem_confidences.get("Spam", 0.0),
+                gem_confidences.get("Scam", 0.0),
+                gem_confidences.get("Phishing", 0.0),
+                gem_conf if (gem_category in spam_like) else 0.0
+            ))
+        elif gem_category is not None and gem_conf is not None:
             spam_prob_gem = float(gem_conf if gem_category in spam_like else (1.0 - gem_conf))
-            # Blend with slight emphasis on Gemini for semantics
+        else:
+            spam_prob_gem = None
+
+        # Blend with slight emphasis on Gemini for semantics
+        if spam_prob_gem is not None:
             spam_probability = max(0.0, min(1.0, 0.6 * spam_prob_gem + 0.4 * spam_prob_kb))
         else:
             spam_probability = max(0.0, min(1.0, spam_prob_kb))
@@ -126,26 +150,44 @@ class ServerlessHybridDetector:
             "spam_probability_pct": round(float(spam_probability) * 100, 2),  # 0..100
             "rule_based": rule_out,
             "gemini_api": (
-                {"category": gem_category, "confidence": gem_conf, "reasoning": gem_reason}
+                {
+                    "category": gem_category,
+                    "confidence": gem_conf,
+                    "reasoning": gem_reason,
+                    "confidences": gem_confidences,
+                    "subcategory": gem_subcategory,
+                    "top_categories": gem_top,
+                }
                 if gem_category is not None else None
             ),
             "details": details,
         }
 
-    def _predict_gemini(self, text: str) -> Tuple[str, float, str]:
+    def _predict_gemini(self, text: str):
         if not self.gemini_model:
             raise RuntimeError("Gemini model is not available. Ensure GEMINI_API_KEY is set.")
-
+        # Ask Gemini for structured JSON to enable richer taxonomy
         prompt = f"""
-        မြန်မာစာပိုဒ်ကို စစ်ဆေးပါ။ အောက်ပါအမျိုးအစားများထဲမှ တစ်ခုအဖြစ် ခွဲခြားပါ:
-        - ယုံကြည်စိတ်ချရ (Legit)
-        - စပမ် (Spam)
-        - လှည်ဖြားမှု (Scam)
-        - ဖစ်ရှင်း (Phishing)
+        အောက်ပါ မြန်မာစာသားကို စိစစ်၍ JSON ဖြင့်သာအဖြေပြန်ပါ။
+        ချမှတ်ထားသော အမျိုးအစားများနှင့် ညီညွတ်စွာ ထုတ်ပေးပါ။
 
-        အမျိုးအစားနှင့် အကြောင်းပြချက်ကို မြန်မာဘာသာဖြင့် ပေးပါ။
+        Categories (broad): Legit, Spam, Scam, Phishing
+        Subcategories (examples): lottery_scam, prize_scam, investment_scam, impersonation, account_phishing,
+        credential_phishing, vishing_viber, malware_link, promotion_spam, adult_spam, financial_request, urgent_action
 
-        စာသား:
+        Return JSON with fields:
+        {
+          "primary_category": "Legit|Spam|Scam|Phishing",
+          "primary_confidence": 0.0-1.0,
+          "subcategory": "string or null",
+          "confidences": {"Legit": float, "Spam": float, "Scam": float, "Phishing": float},
+          "top_categories": [
+             {"category": "...", "confidence": float, "reason": "mm text"}
+          ],
+          "reasoning": "mm text"
+        }
+
+        Input text:
         '''{text}'''
         """
         try:
@@ -154,25 +196,45 @@ class ServerlessHybridDetector:
         except Exception as e:
             logger.error(f"Gemini prediction failed: {e}")
             raise
+        # Try to parse JSON structure first
+        try:
+            data = json.loads(raw)
+            # Basic sanity defaults
+            pri_cat = data.get("primary_category") or data.get("category") or "Legit"
+            pri_conf = float(data.get("primary_confidence", 0.75))
+            confidences = data.get("confidences") or {}
+            # Normalize confidences to floats and clip
+            norm_conf = {}
+            for k in ["Legit", "Spam", "Scam", "Phishing"]:
+                try:
+                    norm_conf[k] = max(0.0, min(1.0, float(confidences.get(k, 0.0))))
+                except Exception:
+                    norm_conf[k] = 0.0
+            subcat = data.get("subcategory")
+            top = data.get("top_categories")
+            reasoning = data.get("reasoning") or raw
+            return {
+                "primary_category": pri_cat,
+                "primary_confidence": pri_conf,
+                "confidences": norm_conf,
+                "subcategory": subcat,
+                "top_categories": top,
+                "reasoning": reasoning,
+            }
+        except Exception:
+            # Fallback to heuristic extraction from plain text
+            lower = raw.lower()
+            if "phishing" in lower or "ဖစ်ရှင်း" in lower:
+                category = "Phishing"
+            elif "scam" in lower or "လှည်ဖြား" in lower:
+                category = "Scam"
+            elif "spam" in lower or "စပမ်" in lower:
+                category = "Spam"
+            else:
+                category = "Legit"
 
-        # Very simple heuristic extraction from model output
-        lower = raw.lower()
-        if "phishing" in lower or "ဖစ်ရှင်း" in lower:
-            category = "Phishing"
-        elif "scam" in lower or "လှည်ဖြား" in lower:
-            category = "Scam"
-        elif "spam" in lower or "စပမ်" in lower:
-            category = "Spam"
-        else:
-            category = "Legit"
-
-        # We don't have a numeric score; assign a heuristic confidence
-        if category == "Legit":
-            confidence = 0.7
-        else:
-            confidence = 0.75
-
-        return category, confidence, raw
+            confidence = 0.7 if category == "Legit" else 0.75
+            return category, confidence, raw
 
     # -------------------- Rule-based (KB) prediction --------------------
     def _predict_rules(self, text: str) -> Dict[str, Any]:
