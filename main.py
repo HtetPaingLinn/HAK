@@ -69,45 +69,12 @@ async def analyze(req: AnalyzeRequest):
             
             return result
         else:
-            # Use only Gemini API (now supports rich dict or legacy tuple)
-            gem_out = detector._predict_gemini(text)
-            if isinstance(gem_out, tuple):
-                gemini_category, gemini_confidence, gemini_reasoning = gem_out
-                confidences = None
-                subcategory = None
-                top = None
-            else:
-                gemini_category = gem_out.get("primary_category") or gem_out.get("category")
-                gemini_confidence = float(gem_out.get("primary_confidence", 0.75))
-                gemini_reasoning = gem_out.get("reasoning")
-                confidences = gem_out.get("confidences")
-                subcategory = gem_out.get("subcategory")
-                top = gem_out.get("top_categories")
-
-            # Compute spam probability similar to hybrid logic
-            spam_like = {"Spam", "Scam", "Phishing"}
-            if confidences:
-                spam_probability = max(
-                    float(confidences.get("Spam", 0.0)),
-                    float(confidences.get("Scam", 0.0)),
-                    float(confidences.get("Phishing", 0.0)),
-                    float(gemini_confidence if (gemini_category in spam_like) else 0.0)
-                )
-            else:
-                spam_probability = float(gemini_confidence if (gemini_category in spam_like) else (1.0 - gemini_confidence))
-
-            binary_label = "spam" if spam_probability >= 0.5 else "general"
-
+            # Use only Gemini API (legacy mode)
+            gemini_category, gemini_confidence, gemini_reasoning = detector._predict_gemini(text)
             return {
                 "category": gemini_category,
                 "confidence": gemini_confidence,
                 "reasoning": gemini_reasoning,
-                "confidences": confidences,
-                "subcategory": subcategory,
-                "top_categories": top,
-                "binary_label": binary_label,
-                "spam_probability": float(spam_probability),
-                "spam_probability_pct": round(float(spam_probability) * 100, 2),
                 "mode": "gemini_only"
             }
             
