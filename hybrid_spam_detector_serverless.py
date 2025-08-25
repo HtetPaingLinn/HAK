@@ -66,7 +66,7 @@ class ServerlessHybridDetector:
         gem_reason: Optional[str] = None
         if self.gemini_model is not None:
             try:
-                gem_category, gem_conf, gem_reason = self._predict_gemini(text)
+                gem_category, gem_conf, gem_reason, gem_detailed = self._predict_gemini(text)
             except Exception as e:
                 logger.error(f"Gemini error in hybrid path: {e}")
 
@@ -126,26 +126,52 @@ class ServerlessHybridDetector:
             "spam_probability_pct": round(float(spam_probability) * 100, 2),  # 0..100
             "rule_based": rule_out,
             "gemini_api": (
-                {"category": gem_category, "confidence": gem_conf, "reasoning": gem_reason}
+                {"category": gem_category, "confidence": gem_conf, "reasoning": gem_reason, "detailed": gem_detailed}
                 if gem_category is not None else None
             ),
             "details": details,
         }
 
-    def _predict_gemini(self, text: str) -> Tuple[str, float, str]:
+    def _predict_gemini(self, text: str) -> Tuple[str, float, str, Dict[str, Any]]:
         if not self.gemini_model:
             raise RuntimeError("Gemini model is not available. Ensure GEMINI_API_KEY is set.")
 
+        # Ask for structured JSON to enable granular UI and analytics
         prompt = f"""
-        မြန်မာစာပိုဒ်ကို စစ်ဆေးပါ။ အောက်ပါအမျိုးအစားများထဲမှ တစ်ခုအဖြစ် ခွဲခြားပါ:
-        - ယုံကြည်စိတ်ချရ (Legit)
-        - စပမ် (Spam)
-        - လှည်ဖြားမှု (Scam)
-        - ဖစ်ရှင်း (Phishing)
+        သင်မှာ မြန်မာစာသားကို စစ်ဆေးသော လုံခြုံရေး ကူညီရေး AI ဖြစ်သည်။ သတ်မှတ်ထားသော JSON များသာ ပြန်ပေးပါ။
+        
+        အထွေထွေ အမျိုးအစားများ (multi-label ပြုလုပ်နိုင်):
+        - Legit, Spam, Scam, Phishing
+        ဆက်လက် အသေးစား အမျိုးအစားများ (လိုရင် ရွေးပါ):
+        - Fraudulent Lottery, Investment Scam, Impersonation, Romance Scam, Malware Link,
+          Urgency, Reward Bait, Contact-Via-App, Personal-Info-Request, Payment-Request
 
-        အမျိုးအစားနှင့် အကြောင်းပြချက်ကို မြန်မာဘာသာဖြင့် ပေးပါ။
+        JSON format (keys in English, content in Burmese where it makes sense):
+        {
+          "primary_label": "Legit | Spam | Scam | Phishing",
+          "labels": ["Spam", "Scam"],
+          "confidences": {
+            "Legit": 0.0-1.0,
+            "Spam": 0.0-1.0,
+            "Scam": 0.0-1.0,
+            "Phishing": 0.0-1.0
+          },
+          "subtypes": ["Fraudulent Lottery", "Contact-Via-App"],
+          "risk_score": 0-100,
+          "explanation_mm": "မြန်မာဘာသာ ဖြင့် အကြောင်းပြချက်",
+          "mitigation_mm": ["...", "..."],
+          "evidence_spans": [
+            {"text": "...", "reason": "..."}
+          ],
+          "entities": {
+            "phones": ["09xxxxxxx"],
+            "links": ["viber://...", "http://..."],
+            "money": ["၁၀ သိန်း"],
+            "apps": ["Viber"]
+          }
+        }
 
-        စာသား:
+        Input text:
         '''{text}'''
         """
         try:
@@ -155,24 +181,49 @@ class ServerlessHybridDetector:
             logger.error(f"Gemini prediction failed: {e}")
             raise
 
-        # Very simple heuristic extraction from model output
-        lower = raw.lower()
-        if "phishing" in lower or "ဖစ်ရှင်း" in lower:
-            category = "Phishing"
-        elif "scam" in lower or "လှည်ဖြား" in lower:
-            category = "Scam"
-        elif "spam" in lower or "စပမ်" in lower:
-            category = "Spam"
-        else:
-            category = "Legit"
+        # Try to coerce to JSON
+        import json, re
+        json_text = raw
+        # Strip code fences if any
+        if json_text.startswith("```"):
+            json_text = re.sub(r"^```[a-zA-Z]*\\n|```$", "", json_text).strip()
+        detailed: Dict[str, Any] = {}
+        category = "Legit"
+        confidence = 0.7
+        try:
+            parsed = json.loads(json_text)
+            detailed = parsed if isinstance(parsed, dict) else {}
+            # Derive primary
+            primary = str(parsed.get("primary_label") or "").strip()
+            if primary in {"Legit", "Spam", "Scam", "Phishing"}:
+                category = primary
+            else:
+                # fallback from confidences
+                confs = parsed.get("confidences") or {}
+                if isinstance(confs, dict) and confs:
+                    category = max(confs.items(), key=lambda x: x[1])[0]
+                    confidence = float(confs.get(category, confidence))
+            # Try to set numeric confidence
+            confs = parsed.get("confidences") or {}
+            if isinstance(confs, dict) and category in confs:
+                confidence = float(confs.get(category, confidence))
+        except Exception:
+            # Fallback: heuristic from free text
+            lower = raw.lower()
+            if "phishing" in lower or "ဖစ်ရှင်း" in lower:
+                category = "Phishing"
+                confidence = 0.78
+            elif "scam" in lower or "လှည်ဖြား" in lower:
+                category = "Scam"
+                confidence = 0.76
+            elif "spam" in lower or "စပမ်" in lower:
+                category = "Spam"
+                confidence = 0.74
+            else:
+                category = "Legit"
+                confidence = 0.7
 
-        # We don't have a numeric score; assign a heuristic confidence
-        if category == "Legit":
-            confidence = 0.7
-        else:
-            confidence = 0.75
-
-        return category, confidence, raw
+        return category, confidence, raw, detailed
 
     # -------------------- Rule-based (KB) prediction --------------------
     def _predict_rules(self, text: str) -> Dict[str, Any]:
