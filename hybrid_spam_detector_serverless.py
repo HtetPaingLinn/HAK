@@ -143,10 +143,11 @@ class ServerlessHybridDetector:
         - လှည်ဖြားမှု (Scam)
         - ဖစ်ရှင်း (Phishing)
 
-        ဖြေကြားရာတွင် အောက်ပါ ဖော်မတ်ကိုသာ အသုံးပြုပါ။ ခေါင်းစဉ် (ဥပမာ "Gemini ခေါင်းဆောင်ချက်:") မပါဝင်စေရ။
-        1) အဖြေတန်း (တစ်ကြောင်း): Verdict = <Legit/Spam/Scam/Phishing>
-        2) သံသယရှိသောအချက်များ: • point1 • point2 (အများဆုံး 3 ခု)
-        3) အကြံပြုချက်: • advice1 • advice2 (အများဆုံး 2 ခု)
+        ခေါင်းစဉ်များ (ဥပမာ "Gemini ခေါင်းဆောင်ချက်:") မပါဝင်စေရ။ အောက်ပါဖော်မတ်နှင့် အကြောင်းပြချက်ကို မျှော်မှန်းချက်ထက် ရှင်းလင်းသေချာသော စာပိုဒ်ရေးသားမှုဖြင့် ပေးပါ (၃-၅ စာကြောင်း):
+        1) Verdict = <Legit/Spam/Scam/Phishing>
+        2) အကြောင်းပြချက်: <ကြာမြင့်သော်လည်း တိကျသေချာသော စာပိုဒ် ၃-၅ စာကြောင်း>
+        3) သံသယရှိသောအချက်များ: • point1 • point2 • point3 (အများဆုံး 3 ခု)
+        4) အကြံပြုချက်: • advice1 • advice2 (အများဆုံး 2 ခု)
 
         စာသား:
         '''{text}'''
@@ -190,25 +191,12 @@ class ServerlessHybridDetector:
             if not lines:
                 return text
             first = lines[0].strip()
-            # Patterns to drop at the very beginning
-            prefixes = [
-                "Gemini ခေါင်းဆောင်ချက်:",
-                "Gemini ခေါင်းဆောင်ချက် -",
-                "Gemini ခေါင်းဆောင်ချက် —",
-                "Gemini Reasoning:",
-                "Gemini reasoning:",
-                "Reasoning:",
-            ]
-            drop_first = False
-            for p in prefixes:
-                if first.startswith(p):
-                    drop_first = True
-                    break
-            # Also drop markdown style heading if it exactly names that heading
-            if not drop_first and (first.startswith("#") or first.startswith("**")):
-                flat = re.sub(r"[*#`_]+", "", first).strip()
-                if flat.lower().startswith("gemini"):
-                    drop_first = True
+            # Drop common heading variants (various colon styles/spaces)
+            heading_pattern = r"^(?:[#*\s]*)(?:Gemini\s*(?:ခေါင်းဆောင်ချက်|Heading|Reasoning)\s*[:：\-—]\s*).*$"
+            drop_first = re.match(heading_pattern, first, flags=re.IGNORECASE) is not None
+            # Also drop simple 'Reasoning:' style headings
+            if not drop_first and re.match(r"^(?:[#*\s]*)(?:Reasoning)\s*[:：\-—]", first, flags=re.IGNORECASE):
+                drop_first = True
             if drop_first:
                 return "\n".join(lines[1:]).lstrip()
             return text
