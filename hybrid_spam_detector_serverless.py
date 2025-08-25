@@ -90,6 +90,21 @@ class ServerlessHybridDetector:
                     final_category = rule_out["category"]
                     final_confidence = rule_out["confidence"] * 0.95
 
+        # Compute spam probability (0..1) blending KB scores and Gemini
+        spam_like = {"Spam", "Scam", "Phishing"}
+        # From KB scores (max of spam-like categories)
+        kb_scores = rule_out.get("scores") or {"Spam": 0.0, "Scam": 0.0, "Phishing": 0.0, "Legit": 0.0}
+        spam_prob_kb = float(max(kb_scores.get("Spam", 0.0), kb_scores.get("Scam", 0.0), kb_scores.get("Phishing", 0.0)))
+        # From Gemini category/confidence if available
+        if gem_category is not None and gem_conf is not None:
+            spam_prob_gem = float(gem_conf if gem_category in spam_like else (1.0 - gem_conf))
+            # Blend with slight emphasis on Gemini for semantics
+            spam_probability = max(0.0, min(1.0, 0.6 * spam_prob_gem + 0.4 * spam_prob_kb))
+        else:
+            spam_probability = max(0.0, min(1.0, spam_prob_kb))
+
+        binary_label = "spam" if spam_probability >= 0.5 else "general"
+
         details: Dict[str, Any] = {
             "kb_hits": rule_out.get("hits", []),
             "kb_score": rule_out.get("confidence", 0.0),
@@ -105,6 +120,10 @@ class ServerlessHybridDetector:
                 "confidence": float(final_confidence),
                 "source": "hybrid_kb_gemini" if gem_category is not None else "kb_only"
             },
+            # Binary view for quick UI decisions
+            "binary_label": binary_label,  # "general" or "spam"
+            "spam_probability": float(spam_probability),  # 0..1
+            "spam_probability_pct": round(float(spam_probability) * 100, 2),  # 0..100
             "rule_based": rule_out,
             "gemini_api": (
                 {"category": gem_category, "confidence": gem_conf, "reasoning": gem_reason}
@@ -162,7 +181,8 @@ class ServerlessHybridDetector:
         """
         if not self.kb:
             # No KB -> neutral Lean Legit
-            return {"category": "Legit", "confidence": 0.5, "hits": []}
+            # Provide default scores for downstream spam probability calc
+            return {"category": "Legit", "confidence": 0.5, "hits": [], "scores": {"Phishing": 0.0, "Scam": 0.0, "Spam": 0.0, "Legit": 0.5}}
 
         lower = text.lower()
         hits: List[Dict[str, Any]] = []
@@ -179,7 +199,10 @@ class ServerlessHybridDetector:
             for h in hits:
                 cat_counts[h["category"]] = cat_counts.get(h["category"], 0) + 1
             best_cat = max(cat_counts.items(), key=lambda x: x[1])[0]
-            return {"category": best_cat, "confidence": 0.9, "hits": hits}
+            # Provide scores reflecting a strong override
+            scores_override: Dict[str, float] = {"Phishing": 0.0, "Scam": 0.0, "Spam": 0.0, "Legit": 0.0}
+            scores_override[best_cat] = 0.9
+            return {"category": best_cat, "confidence": 0.9, "hits": hits, "scores": scores_override}
 
         # Keyword-based scoring
         scores: Dict[str, float] = {"Phishing": 0.0, "Scam": 0.0, "Spam": 0.0, "Legit": 0.0}
@@ -207,7 +230,7 @@ class ServerlessHybridDetector:
         elif best_cat != "Legit" and best_score < 0.65:
             best_score = 0.65
 
-        return {"category": best_cat, "confidence": float(best_score), "hits": hits}
+        return {"category": best_cat, "confidence": float(best_score), "hits": hits, "scores": scores}
 
     def get_model_stats(self) -> Dict[str, Any]:
         return {
