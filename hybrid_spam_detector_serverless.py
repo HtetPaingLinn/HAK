@@ -110,6 +110,7 @@ class ServerlessHybridDetector:
             "kb_score": rule_out.get("confidence", 0.0),
         }
         # Attach Gemini free-text/JSON reasoning and structured fields
+        gemini_reason_out: Optional[str] = gem_reason
         if gem_reason is not None:
             details["reasoning"] = gem_reason
             try:
@@ -126,6 +127,9 @@ class ServerlessHybridDetector:
                     entities = parsed_g.get("entities")
                     rec_actions = parsed_g.get("recommended_actions")
                     alternatives = parsed_g.get("alternatives")
+                    # Prefer a concise Burmese summary for outward-facing reasoning
+                    if isinstance(parsed_g.get("reasoning"), str) and parsed_g.get("reasoning").strip():
+                        gemini_reason_out = parsed_g.get("reasoning").strip()
                 else:
                     subtype = risk_level = factors = entities = rec_actions = alternatives = None
             except Exception:
@@ -154,7 +158,7 @@ class ServerlessHybridDetector:
             "alternatives": alternatives,
             "rule_based": rule_out,
             "gemini_api": (
-                {"category": gem_category, "confidence": gem_conf, "reasoning": gem_reason}
+                {"category": gem_category, "confidence": gem_conf, "reasoning": gemini_reason_out}
                 if gem_category is not None else None
             ),
             "details": details,
