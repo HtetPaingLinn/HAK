@@ -23,8 +23,6 @@ class ServerlessHybridDetector:
         self.local_model = None  # Not available in serverless
         self.gemini_model = None
         self.kb: Dict[str, Any] = {}
-        # Holds last structured Gemini JSON (if available)
-        self._last_gemini_context: Optional[Dict[str, Any]] = None
 
         # Load KB JSON (rule-based indicators)
         try:
@@ -115,9 +113,6 @@ class ServerlessHybridDetector:
             details["reasoning"] = gem_reason
         if agreement is not None:
             details["agreement"] = agreement
-        # Attach structured Gemini context if available
-        if getattr(self, "_last_gemini_context", None):
-            details["gemini_structured"] = self._last_gemini_context
 
         return {
             "final_prediction": {
@@ -131,12 +126,7 @@ class ServerlessHybridDetector:
             "spam_probability_pct": round(float(spam_probability) * 100, 2),  # 0..100
             "rule_based": rule_out,
             "gemini_api": (
-                {
-                    "category": gem_category,
-                    "confidence": gem_conf,
-                    "reasoning": gem_reason,
-                    "structured": getattr(self, "_last_gemini_context", None),
-                }
+                {"category": gem_category, "confidence": gem_conf, "reasoning": gem_reason}
                 if gem_category is not None else None
             ),
             "details": details,
@@ -145,38 +135,15 @@ class ServerlessHybridDetector:
     def _predict_gemini(self, text: str) -> Tuple[str, float, str]:
         if not self.gemini_model:
             raise RuntimeError("Gemini model is not available. Ensure GEMINI_API_KEY is set.")
-        # Ask for structured Burmese JSON with richer taxonomy
+
         prompt = f"""
-        အောက်ပါ မြန်မာစာသားကို လုံခြုံရေး ရှုထောင့်မှ ခွဲခြားပါ။ မြန်မာဘာသာဖြင့် JSON အဖြစ်သာ ထုတ်ပေးပါ။
+        မြန်မာစာပိုဒ်ကို စစ်ဆေးပါ။ အောက်ပါအမျိုးအစားများထဲမှ တစ်ခုအဖြစ် ခွဲခြားပါ:
+        - ယုံကြည်စိတ်ချရ (Legit)
+        - စပမ် (Spam)
+        - လှည်ဖြားမှု (Scam)
+        - ဖစ်ရှင်း (Phishing)
 
-        အဓိကအမျိုးအစားများ (primary_category):
-        - Legit (ယုံကြည်စိတ်ချရ)
-        - Spam (စပမ်)
-        - Scam (လှည်ဖြားမှု)
-        - Phishing (ဖစ်ရှင်း)
-        - Malware (မေါ်လဝဲ)
-        - Impersonation (မည်သူ့အဖြစ် ဖျက်ဆီးယှက်ယှဲ)
-        - Misinformation (မှားယွင်းသတင်း)
-        - Harassment (အနှောင့်အယှက်/သာမန်မဟုတ်သောဖော်ပြချက်)
-
-        Subcategory ဥပမာများ (optional):
-        - Scam: investment, lottery, job, romance, tech_support, delivery, loan
-        - Phishing: credential, otp, payment, account_verification, bank, wallet
-        - Spam: marketing, bulk, referral, affiliate
-        - Malware: apk, link, attachment, drive_by
-        - Impersonation: official, bank, company, celebrity, friend_family
-
-        JSON Schema:
-        {
-          "primary_category": "Legit|Spam|Scam|Phishing|Malware|Impersonation|Misinformation|Harassment",
-          "subcategory": "string",
-          "confidence": 0.0-1.0,
-          "risk_level": "Low|Medium|High|Critical",
-          "reasons_mm": ["မြန်မာဘာသာဖြင့် အကြောင်းပြချက်များ"],
-          "red_flags_mm": ["သံသယဖြစ်စရာအချက်များ"],
-          "suggested_actions_mm": ["လုံခြုံရေးအတွက် လုပ်ဆောင်ရန်"],
-          "short_explanation_mm": "အကျဉ်းချုံးရှင်းလင်းချက်"
-        }
+        အမျိုးအစားနှင့် အကြောင်းပြချက်ကို မြန်မာဘာသာဖြင့် ပေးပါ။
 
         စာသား:
         '''{text}'''
@@ -187,62 +154,25 @@ class ServerlessHybridDetector:
         except Exception as e:
             logger.error(f"Gemini prediction failed: {e}")
             raise
-        # Try to parse structured JSON from model output
-        self._last_gemini_context = None
-        parsed_category: Optional[str] = None
-        parsed_conf: Optional[float] = None
-        # Extract JSON if wrapped in code fences
-        candidate = raw
-        if "```" in raw:
-            try:
-                candidate = raw.split("```", 2)[1]
-                # Remove language tag if present
-                candidate = candidate.split("\n", 1)[1] if candidate.startswith("json") else candidate
-            except Exception:
-                candidate = raw
-        try:
-            obj = json.loads(candidate)
-            if isinstance(obj, dict):
-                self._last_gemini_context = obj
-                pc = str(obj.get("primary_category") or "").strip()
-                # Normalize category capitalization
-                mapping = {
-                    "legit": "Legit",
-                    "spam": "Spam",
-                    "scam": "Scam",
-                    "phishing": "Phishing",
-                    "malware": "Malware",
-                    "impersonation": "Impersonation",
-                    "misinformation": "Misinformation",
-                    "harassment": "Harassment",
-                }
-                parsed_category = mapping.get(pc.lower(), "Legit") if pc else None
-                conf = obj.get("confidence")
-                if isinstance(conf, (int, float)):
-                    parsed_conf = max(0.0, min(1.0, float(conf)))
-        except Exception:
-            # Fallback to heuristic if JSON parsing fails
-            parsed_category = None
-            parsed_conf = None
 
-        if parsed_category is None or parsed_conf is None:
-            # Heuristic extraction
-            lower = raw.lower()
-            if "phishing" in lower or "ဖစ်ရှင်း" in lower:
-                parsed_category = "Phishing"
-            elif "scam" in lower or "လှည်ဖြား" in lower:
-                parsed_category = "Scam"
-            elif "malware" in lower or "မေါ်လဝဲ" in lower:
-                parsed_category = "Malware"
-            elif "impersonation" in lower or "အဖြစ်" in lower:
-                parsed_category = "Impersonation"
-            elif "spam" in lower or "စပမ်" in lower:
-                parsed_category = "Spam"
-            else:
-                parsed_category = "Legit"
-            parsed_conf = 0.75 if parsed_category != "Legit" else 0.7
+        # Very simple heuristic extraction from model output
+        lower = raw.lower()
+        if "phishing" in lower or "ဖစ်ရှင်း" in lower:
+            category = "Phishing"
+        elif "scam" in lower or "လှည်ဖြား" in lower:
+            category = "Scam"
+        elif "spam" in lower or "စပမ်" in lower:
+            category = "Spam"
+        else:
+            category = "Legit"
 
-        return parsed_category, float(parsed_conf), raw
+        # We don't have a numeric score; assign a heuristic confidence
+        if category == "Legit":
+            confidence = 0.7
+        else:
+            confidence = 0.75
+
+        return category, confidence, raw
 
     # -------------------- Rule-based (KB) prediction --------------------
     def _predict_rules(self, text: str) -> Dict[str, Any]:

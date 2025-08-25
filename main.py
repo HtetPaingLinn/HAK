@@ -71,20 +71,11 @@ async def analyze(req: AnalyzeRequest):
         else:
             # Use only Gemini API (legacy mode)
             gemini_category, gemini_confidence, gemini_reasoning = detector._predict_gemini(text)
-            # Compute spam probability and binary label similar to hybrid
-            spam_like = {"Spam", "Scam", "Phishing", "Malware", "Impersonation"}
-            spam_probability = float(gemini_confidence if gemini_category in spam_like else (1.0 - gemini_confidence))
-            binary_label = "spam" if spam_probability >= 0.5 else "general"
-
             return {
-                "mode": "gemini_only",
                 "category": gemini_category,
                 "confidence": gemini_confidence,
                 "reasoning": gemini_reasoning,
-                "structured": getattr(detector, "_last_gemini_context", None),
-                "binary_label": binary_label,
-                "spam_probability": spam_probability,
-                "spam_probability_pct": round(spam_probability * 100, 2)
+                "mode": "gemini_only"
             }
             
     except Exception as e:
