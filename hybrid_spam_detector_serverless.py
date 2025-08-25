@@ -137,13 +137,16 @@ class ServerlessHybridDetector:
             raise RuntimeError("Gemini model is not available. Ensure GEMINI_API_KEY is set.")
 
         prompt = f"""
-        မြန်မာစာပိုဒ်ကို စစ်ဆေးပါ။ အောက်ပါအမျိုးအစားများထဲမှ တစ်ခုအဖြစ် ခွဲခြားပါ:
+        မြန်မာစာသားကို စစ်ဆေးပြီး အောက်ပါအမျိုးအစားများထဲမှ တစ်ခုအဖြစ် ခွဲခြားပါ:
         - ယုံကြည်စိတ်ချရ (Legit)
         - စပမ် (Spam)
         - လှည်ဖြားမှု (Scam)
         - ဖစ်ရှင်း (Phishing)
 
-        အမျိုးအစားနှင့် အကြောင်းပြချက်ကို မြန်မာဘာသာဖြင့် ပေးပါ။
+        ဖြေကြားရာတွင် အောက်ပါ ဖော်မတ်ကိုသာ အသုံးပြုပါ။ ခေါင်းစဉ် (ဥပမာ "Gemini ခေါင်းဆောင်ချက်:") မပါဝင်စေရ။
+        1) အဖြေတန်း (တစ်ကြောင်း): Verdict = <Legit/Spam/Scam/Phishing>
+        2) သံသယရှိသောအချက်များ: • point1 • point2 (အများဆုံး 3 ခု)
+        3) အကြံပြုချက်: • advice1 • advice2 (အများဆုံး 2 ခု)
 
         စာသား:
         '''{text}'''
@@ -151,6 +154,8 @@ class ServerlessHybridDetector:
         try:
             response = self.gemini_model.generate_content(prompt)
             raw = (response.text or "").strip()
+            # Clean Gemini heading prefixes like "Gemini ခေါင်းဆောင်ချက်:" while keeping core content
+            raw = self._clean_gemini_text(raw)
         except Exception as e:
             logger.error(f"Gemini prediction failed: {e}")
             raise
@@ -173,6 +178,43 @@ class ServerlessHybridDetector:
             confidence = 0.75
 
         return category, confidence, raw
+
+    def _clean_gemini_text(self, text: str) -> str:
+        """Remove an initial heading like 'Gemini ခေါင်းဆောင်ချက်:' but keep the rest of the message.
+        Conservative: only strips if it's a leading heading/prefix on the first line.
+        """
+        try:
+            if not text:
+                return text
+            lines = text.splitlines()
+            if not lines:
+                return text
+            first = lines[0].strip()
+            # Patterns to drop at the very beginning
+            prefixes = [
+                "Gemini ခေါင်းဆောင်ချက်:",
+                "Gemini ခေါင်းဆောင်ချက် -",
+                "Gemini ခေါင်းဆောင်ချက် —",
+                "Gemini Reasoning:",
+                "Gemini reasoning:",
+                "Reasoning:",
+            ]
+            drop_first = False
+            for p in prefixes:
+                if first.startswith(p):
+                    drop_first = True
+                    break
+            # Also drop markdown style heading if it exactly names that heading
+            if not drop_first and (first.startswith("#") or first.startswith("**")):
+                flat = re.sub(r"[*#`_]+", "", first).strip()
+                if flat.lower().startswith("gemini"):
+                    drop_first = True
+            if drop_first:
+                return "\n".join(lines[1:]).lstrip()
+            return text
+        except Exception:
+            # On any error, return original text
+            return text
 
     # -------------------- Rule-based (KB) prediction --------------------
     def _predict_rules(self, text: str) -> Dict[str, Any]:
