@@ -109,33 +109,8 @@ class ServerlessHybridDetector:
             "kb_hits": rule_out.get("hits", []),
             "kb_score": rule_out.get("confidence", 0.0),
         }
-        # Attach Gemini free-text/JSON reasoning and structured fields
-        gemini_reason_out: Optional[str] = gem_reason
         if gem_reason is not None:
             details["reasoning"] = gem_reason
-            try:
-                cleaned_g = gem_reason
-                cleaned_g = re.sub(r"^```[a-zA-Z]*", "", cleaned_g).strip()
-                cleaned_g = re.sub(r"```$", "", cleaned_g).strip()
-                parsed_g = json.loads(cleaned_g)
-                if isinstance(parsed_g, dict):
-                    details["gemini_structured"] = parsed_g
-                    # Bubble up common fields for easy client consumption
-                    subtype = parsed_g.get("subtype")
-                    risk_level = parsed_g.get("risk_level")
-                    factors = parsed_g.get("factors")
-                    entities = parsed_g.get("entities")
-                    rec_actions = parsed_g.get("recommended_actions")
-                    alternatives = parsed_g.get("alternatives")
-                    # Prefer a concise Burmese summary for outward-facing reasoning
-                    if isinstance(parsed_g.get("reasoning"), str) and parsed_g.get("reasoning").strip():
-                        gemini_reason_out = parsed_g.get("reasoning").strip()
-                else:
-                    subtype = risk_level = factors = entities = rec_actions = alternatives = None
-            except Exception:
-                subtype = risk_level = factors = entities = rec_actions = alternatives = None
-        else:
-            subtype = risk_level = factors = entities = rec_actions = alternatives = None
         if agreement is not None:
             details["agreement"] = agreement
 
@@ -149,16 +124,9 @@ class ServerlessHybridDetector:
             "binary_label": binary_label,  # "general" or "spam"
             "spam_probability": float(spam_probability),  # 0..1
             "spam_probability_pct": round(float(spam_probability) * 100, 2),  # 0..100
-            # Rich Gemini context (if available)
-            "subtype": subtype,
-            "risk_level": risk_level,
-            "factors": factors,
-            "entities": entities,
-            "recommended_actions": rec_actions,
-            "alternatives": alternatives,
             "rule_based": rule_out,
             "gemini_api": (
-                {"category": gem_category, "confidence": gem_conf, "reasoning": gemini_reason_out}
+                {"category": gem_category, "confidence": gem_conf, "reasoning": gem_reason}
                 if gem_category is not None else None
             ),
             "details": details,
@@ -167,21 +135,15 @@ class ServerlessHybridDetector:
     def _predict_gemini(self, text: str) -> Tuple[str, float, str]:
         if not self.gemini_model:
             raise RuntimeError("Gemini model is not available. Ensure GEMINI_API_KEY is set.")
-        # Ask for strict JSON so we can parse reliably and extract more context
+
         prompt = f"""
-        အောက်ပါ မြန်မာစာသားကို စစ်ဆေးပြီး JSON အနေဖြင့်သာ ဖြန့်ချိပါ။ Markdown မရေးပါနှင့်။
-        JSON schema:
-        {{
-          "primary_label": "Legit | Spam | Scam | Phishing",
-          "subtype": "e.g. Lottery, Investment, Loan, Impersonation, Promotion, Malware, Account_Verification, Romance, Charity, Crypto, Other",
-          "confidence": 0.0-1.0,
-          "reasoning": "မြန်မာဘာသာဖြင့် အတိုချုပ်ရှင်းပြချက်",
-          "risk_level": "low | medium | high | critical",
-          "factors": ["အကြောင်းပြချက်များ (မြန်မာ)"],
-          "entities": {{"channels": ["Viber", "Facebook", ...], "phones": ["09..."], "urls": ["..."], "emails": ["..."], "money_request": true | false, "personal_data_request": true | false }},
-          "alternatives": [{{"label": "Legit | Spam | Scam | Phishing", "subtype": "...", "confidence": 0.0-1.0}}],
-          "recommended_actions": ["လုပ်ဆောင်ရန် အကြံပြုချက်များ (မြန်မာ)"]
-        }}
+        မြန်မာစာပိုဒ်ကို စစ်ဆေးပါ။ အောက်ပါအမျိုးအစားများထဲမှ တစ်ခုအဖြစ် ခွဲခြားပါ:
+        - ယုံကြည်စိတ်ချရ (Legit)
+        - စပမ် (Spam)
+        - လှည်ဖြားမှု (Scam)
+        - ဖစ်ရှင်း (Phishing)
+
+        အမျိုးအစားနှင့် အကြောင်းပြချက်ကို မြန်မာဘာသာဖြင့် ပေးပါ။
 
         စာသား:
         '''{text}'''
@@ -193,47 +155,22 @@ class ServerlessHybridDetector:
             logger.error(f"Gemini prediction failed: {e}")
             raise
 
-        # Default fallbacks
-        category = "Legit"
-        confidence = 0.7
-
-        # Try to parse strict JSON. If it fails, fallback to heuristic label extraction
-        parsed: Optional[Dict[str, Any]] = None
-        try:
-            # Some models may wrap with code fences; strip them
-            cleaned = raw
-            cleaned = re.sub(r"^```[a-zA-Z]*", "", cleaned).strip()
-            cleaned = re.sub(r"```$", "", cleaned).strip()
-            parsed = json.loads(cleaned)
-        except Exception:
-            parsed = None
-
-        if parsed and isinstance(parsed, dict):
-            primary = str(parsed.get("primary_label", "Legit")).strip() or "Legit"
-            # Normalize
-            primary_norm = primary.capitalize()
-            if primary_norm not in {"Legit", "Spam", "Scam", "Phishing"}:
-                primary_norm = "Legit"
-            category = primary_norm
-            try:
-                confidence = float(parsed.get("confidence", confidence))
-                confidence = max(0.0, min(1.0, confidence))
-            except Exception:
-                pass
-            # Store richer JSON back into "raw" for upstream callers
-            raw = json.dumps(parsed, ensure_ascii=False)
+        # Very simple heuristic extraction from model output
+        lower = raw.lower()
+        if "phishing" in lower or "ဖစ်ရှင်း" in lower:
+            category = "Phishing"
+        elif "scam" in lower or "လှည်ဖြား" in lower:
+            category = "Scam"
+        elif "spam" in lower or "စပမ်" in lower:
+            category = "Spam"
         else:
-            # Heuristic extraction from free text
-            lower = raw.lower()
-            if "phishing" in lower or "ဖစ်ရှင်း" in lower:
-                category = "Phishing"
-            elif "scam" in lower or "လှည်ဖြား" in lower:
-                category = "Scam"
-            elif "spam" in lower or "စပမ်" in lower:
-                category = "Spam"
-            else:
-                category = "Legit"
-            confidence = 0.75 if category != "Legit" else 0.7
+            category = "Legit"
+
+        # We don't have a numeric score; assign a heuristic confidence
+        if category == "Legit":
+            confidence = 0.7
+        else:
+            confidence = 0.75
 
         return category, confidence, raw
 

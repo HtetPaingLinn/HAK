@@ -71,28 +71,11 @@ async def analyze(req: AnalyzeRequest):
         else:
             # Use only Gemini API (legacy mode)
             gemini_category, gemini_confidence, gemini_reasoning = detector._predict_gemini(text)
-            concise_reasoning = gemini_reasoning
-            details = {}
-            # If Gemini returned JSON, extract concise reasoning and keep full JSON under details
-            try:
-                import json, re  # local import to avoid top-level dependency
-                cleaned = gemini_reasoning
-                cleaned = re.sub(r"^```[a-zA-Z]*", "", cleaned).strip()
-                cleaned = re.sub(r"```$", "", cleaned).strip()
-                parsed = json.loads(cleaned)
-                if isinstance(parsed, dict):
-                    if isinstance(parsed.get("reasoning"), str) and parsed.get("reasoning").strip():
-                        concise_reasoning = parsed.get("reasoning").strip()
-                    details["gemini_structured"] = parsed
-            except Exception:
-                pass
-
             return {
                 "category": gemini_category,
                 "confidence": gemini_confidence,
-                "reasoning": concise_reasoning,
-                "mode": "gemini_only",
-                "details": details or None
+                "reasoning": gemini_reasoning,
+                "mode": "gemini_only"
             }
             
     except Exception as e:
