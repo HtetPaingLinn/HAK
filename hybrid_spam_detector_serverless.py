@@ -79,16 +79,27 @@ class ServerlessHybridDetector:
             agreement = (final_category == gem_category)
             # If categories agree, boost confidence
             if agreement:
-                final_confidence = min(1.0, (rule_out["confidence"] * 0.5 + gem_conf * 0.6))
+                final_confidence = min(1.0, (rule_out["confidence"] * 0.4 + gem_conf * 0.7))
                 final_category = gem_category
             else:
-                # Disagree: choose higher confidence source
-                if gem_conf >= rule_out["confidence"]:
+                # Disagree: Prioritize Gemini for semantic understanding, especially for Legit classifications
+                # Gemini is better at understanding context and legitimate Myanmar text
+                if gem_category == "Legit" and gem_conf >= 0.7:
+                    # Strong Gemini Legit prediction overrides KB false positives
                     final_category = gem_category
-                    final_confidence = gem_conf * 0.95
+                    final_confidence = gem_conf * 0.9
+                elif gem_category != "Legit" and rule_out["category"] == "Legit":
+                    # KB says Legit but Gemini flags as spam - trust Gemini's semantic analysis
+                    final_category = gem_category
+                    final_confidence = gem_conf * 0.85
+                elif gem_conf > rule_out["confidence"] + 0.1:
+                    # Gemini has significantly higher confidence
+                    final_category = gem_category
+                    final_confidence = gem_conf * 0.9
                 else:
-                    final_category = rule_out["category"]
-                    final_confidence = rule_out["confidence"] * 0.95
+                    # Close confidence scores - slight preference to Gemini for semantic understanding
+                    final_category = gem_category
+                    final_confidence = gem_conf * 0.85
 
         # Compute spam probability (0..1) blending KB scores and Gemini
         spam_like = {"Spam", "Scam", "Phishing"}
@@ -98,8 +109,13 @@ class ServerlessHybridDetector:
         # From Gemini category/confidence if available
         if gem_category is not None and gem_conf is not None:
             spam_prob_gem = float(gem_conf if gem_category in spam_like else (1.0 - gem_conf))
-            # Blend with slight emphasis on Gemini for semantics
-            spam_probability = max(0.0, min(1.0, 0.6 * spam_prob_gem + 0.4 * spam_prob_kb))
+            # Prioritize Gemini's semantic understanding over KB pattern matching
+            if final_category == "Legit":
+                # When final result is Legit, reduce spam probability significantly
+                spam_probability = max(0.0, min(1.0, 0.3 * spam_prob_gem + 0.2 * spam_prob_kb))
+            else:
+                # For spam-like categories, blend more conservatively
+                spam_probability = max(0.0, min(1.0, 0.7 * spam_prob_gem + 0.3 * spam_prob_kb))
         else:
             spam_probability = max(0.0, min(1.0, spam_prob_kb))
 
